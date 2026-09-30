@@ -72,6 +72,34 @@ Current functionality includes:
 
 ---
 
+# Testing
+
+The test suite is organized into three files:
+
+1. `tests/kk.quick.bats` - Quick regression tests (main flows without slow stress cases)
+2. `tests/kk.bats` - Comprehensive tests (every action, modifier flags, error paths, etc.)
+3. `tests/kk.stress.bats` - Stress tests (multi-file stress pass, concurrent operations)
+
+All tests can be run with the unified test file:
+- `tests/kk.full.bats` - All tests combined in a single file with hierarchical tags
+
+To run tests with specific tags:
+```bash
+# Quick tests only
+bats --filter-tags quick tests/kk.full.bats
+
+# Full tests (quick + full)
+bats --filter-tags full tests/kk.full.bats
+
+# Stress tests (quick + full + stress)
+bats --filter-tags full,stress tests/kk.full.bats
+
+# Default (everything except stress)
+bats --filter-tags '!stress' tests/kk.full.bats
+```
+
+---
+
 # Security Model
 
 A `.kk` asset contains:
@@ -98,6 +126,28 @@ Decryption is refused if:
 The default design philosophy is:
 
 ```text
+
+---
+
+# Testing
+
+The project includes three test suites to comprehensively test the functionality:
+
+1. `tests/kk.bats` - Full comprehensive test suite covering all actions and error paths
+2. `tests/kk.quick.bats` - Quick regression tests (main flows without stress cases)  
+3. `tests/kk.stress.bats` - Stress tests with multiple files and concurrent operations
+
+All tests can be run with:
+```bash
+bats tests/kk.bats
+bats tests/kk.quick.bats
+bats tests/kk.stress.bats
+```
+
+For a complete test run with all tests combined, use:
+```bash
+bats tests/kk.unified.bats
+```
 fail closed
 ```
 

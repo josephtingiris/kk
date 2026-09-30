@@ -19,7 +19,7 @@
 #
 # dependencies  : bash 4+, awk, gnu coreutils, gnu tar, gzip, openssl 3.5+
 #
-readonly _KK_CHECKSUM_HASH="a75399d7811ec53e815517524563849a243544d9367fc6763984d9898cc74c2eb4ed9294d39c379e87fd7542d6c0c4ab9012b3b9557611b5c684cb02ca2b7281"
+readonly _KK_CHECKSUM_HASH="ca44af839c0967f88ba04806d4663101e8cd4f72cf25d053dde873157f8731655de9d71314d872c7017eb9d320d07604123f9d5b43150d35cd8ca766d9a60ac8"
 #
 # -----BEGIN CHECKSUM HASH-----
 
@@ -1389,9 +1389,9 @@ asset_get_selection() { # $1 = relpath filter or empty -> echoes asset name
     mapfile -t rows < "$row_file"
     if ((${#rows[@]} == 0)); then
         if [[ -n "${1:-}" ]]; then
-            aborting "no $KK_DIR_NAME assets found for '$1'"
+            aborting "no selectable $KK_DIR_NAME assets found for '$1'"
         fi
-        aborting "no $KK_DIR_NAME assets found"
+        aborting "no selectable $KK_DIR_NAME assets found"
     fi
     local asset
     if ((${#rows[@]} == 1)); then
@@ -1898,8 +1898,8 @@ assets_inventory_print_json() {
 assets_inventory_print_table() {
     local rows
     if [[ ! -s "$KK_ASSETS_INVENTORY_FILE" ]]; then
-        print_info "no $KK_DIR_NAME assets found"
-        return 0
+        print_info "no unlocked $KK_DIR_NAME assets found"
+        return 1
     fi
     mapfile -t rows < "$KK_ASSETS_INVENTORY_FILE"
     printf '%-3s %-36s %-5s %-30s %-12s %s\n' "#" "asset" "kind" "path" "size" "created"
@@ -1938,8 +1938,8 @@ assets_inventory_search() { # $1 = case-insensitive search pattern
             printf '[]\n'
             return 0
         fi
-        print_info "no $KK_DIR_NAME assets found"
-        return 0
+        print_info "no searchable $KK_DIR_NAME assets found"
+        return 1
     fi
 
     mapfile -t rows < "$KK_ASSETS_INVENTORY_FILE"
@@ -2094,7 +2094,7 @@ assets_print() { # $1 = relpath filter or empty; honors KK_JSON_OUT
         else
             print_info "no $KK_DIR_NAME assets found"
         fi
-        return 0
+        return 1
     fi
     if $KK_JSON_OUT; then
         assets_print_json "${rows[@]}"
@@ -2157,8 +2157,8 @@ assets_print_public() { # honors KK_JSON_OUT
             printf '[]\n'
             return 0
         fi
-        print_info "no $KK_DIR_NAME assets found"
-        return 0
+        print_info "no public $KK_DIR_NAME assets found"
+        return 1
     fi
     if $KK_JSON_OUT; then
         assets_print_public_json "${rows[@]}"
@@ -2297,7 +2297,7 @@ kk_action_dry_run() { # $1 = action, $2 = target (already the stored path)
             mapfile -t rows < "$row_file"
             if ((${#rows[@]} == 0)); then
                 print_info "dry run: no assets found - nothing to do"
-                return 0
+                return 1
             fi
             IFS=$'\t' read -r _ asset _ <<< "${rows[0]}"
             f="$KK_DIR_NAME/$asset"
