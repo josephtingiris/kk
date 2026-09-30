@@ -618,7 +618,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     dec f.txt
     [ "$status" -eq 1 ]
-    [[ "$output" == *"no .kk assets found"* ]]
+    [[ "$output" == *"unlocked with the current passphrase"* ]]
 }
 
 @test "full: decrypt with wrong passphrase fails, creates nothing" {
@@ -724,7 +724,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     run "$KK" --decrypt --yes --ppfile pp
     [ "$status" -eq 1 ]
-    [[ "$output" == *"no .kk assets found"* ]]
+    [[ "$output" == *"unlocked with the current passphrase"* ]]
 }
 
 @test "full: decrypt picks newest asset with --yes" {
@@ -933,7 +933,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     run "$KK" ls
     [ "$status" -eq 0 ]
-    [[ "$output" == *"no .kk assets found"* ]]
+    [[ "$output" == *"no assets found"* ]]
 }
 
 @test "full: ls shows header and numbered rows" {
@@ -1391,7 +1391,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     sed -i '1s/.*/AAAA/' "$e"
     run "$KK" ls
     [ "$status" -eq 0 ]
-    [[ "$output" == *"no .kk assets found"* ]]
+    [[ "$output" == *"no assets found"* ]]
 }
 
 @test "full: --rm with confirmation y removes the asset" {
@@ -1449,7 +1449,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     run "$KK" nosuch.txt --rm --yes
     [ "$status" -eq 1 ]
-    [[ "$output" == *"no .kk assets found"* ]]
+    [[ "$output" == *"no assets found"* ]]
 }
 
 @test "full: --rm --dry-run removes nothing" {
