@@ -74,28 +74,23 @@ Current functionality includes:
 
 # Testing
 
-The test suite is organized into three files:
+The test suite is now organized in a single file:
 
-1. `tests/kk.quick.bats` - Quick regression tests (main flows without slow stress cases)
-2. `tests/kk.bats` - Comprehensive tests (every action, modifier flags, error paths, etc.)
-3. `tests/kk.stress.bats` - Stress tests (multi-file stress pass, concurrent operations)
-
-All tests can be run with the unified test file:
-- `tests/kk.full.bats` - All tests combined in a single file with hierarchical tags
+1. `tests/kk.tests.bats` - All tests combined in a single file with hierarchical tags
 
 To run tests with specific tags:
 ```bash
 # Quick tests only
-bats --filter-tags quick tests/kk.full.bats
+bats --filter-tags quick tests/kk.tests.bats
 
 # Full tests (quick + full)
-bats --filter-tags full tests/kk.full.bats
+bats --filter-tags full tests/kk.tests.bats
 
 # Stress tests (quick + full + stress)
-bats --filter-tags full,stress tests/kk.full.bats
+bats --filter-tags full,stress tests/kk.tests.bats
 
 # Default (everything except stress)
-bats --filter-tags '!stress' tests/kk.full.bats
+bats --filter-tags '!stress' tests/kk.tests.bats
 ```
 
 ---
@@ -131,22 +126,13 @@ The default design philosophy is:
 
 # Testing
 
-The project includes three test suites to comprehensively test the functionality:
+The project includes a unified test suite:
 
-1. `tests/kk.bats` - Full comprehensive test suite covering all actions and error paths
-2. `tests/kk.quick.bats` - Quick regression tests (main flows without stress cases)  
-3. `tests/kk.stress.bats` - Stress tests with multiple files and concurrent operations
+1. `tests/kk.tests.bats` - All tests combined in a single file with hierarchical tags
 
 All tests can be run with:
 ```bash
-bats tests/kk.bats
-bats tests/kk.quick.bats
-bats tests/kk.stress.bats
-```
-
-For a complete test run with all tests combined, use:
-```bash
-bats tests/kk.unified.bats
+bats tests/kk.tests.bats
 ```
 fail closed
 ```
@@ -479,7 +465,7 @@ GitHub
 GitLab
 ```
 
-A complete documented workflow is available in:
+A draft documented workflow is available in:
 
 ```text
 docs/kk-provenance-workflow-v1.md
