@@ -1,12 +1,20 @@
 #!/usr/bin/env bats
 #
-# kk - comprehensive bats test suite
-# Run:  bats ~/tests/bats/kk.bats
+# Usage
 #
-# Covers: every action, every modifier flag, flag permutations and
-# combinations, error paths, tamper detection, mtime round-trip,
-# JSON output validity, and a multi-file stress pass.
+# Quick:
+#   bats --filter-tags quick kk.tests.bats
+#
+# Full (quick + full):
+#   bats --filter-tags full kk.tests.bats
+#
+# Stress (quick + full + stress):
+#   bats --filter-tags stress kk.tests.bats
+#
+# Default (everything except future stress-only tests):
+#   bats --filter-tags '!stress-only' kk.tests.bats
 
+# Common setup and helpers - consolidated from all three test files
 setup_file() {
     SAFE_XDG_RUNTIME_DIR=$(assembly_runtime_dir || true)
     RUNTIME_PARENT=$(assembly_parent || true)
@@ -156,27 +164,158 @@ runtime_print_new_namespaces() {
 enc() { run "$KK" "$@" --encrypt --ppfile pp; }
 dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 
-# ======================== basics ========================
+# ======================== Quick Tests ========================
+# Tests from kk.quick.bats - tagged as quick, full, stress
 
-@test "--help prints usage and exits 0" {
+# bats test_tags=quick,full,stress
+@test "quick: cli basics" {
+    run "$KK" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"usage"* ]]
+
+    run "$KK" --checksum
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ ^[0-9a-f]{128}$ ]]
+
+    run "$KK" --version
+    [ "$status" -eq 0 ]
+    [ "$output" = "kk 0.2.9" ]
+
+    run "$KK" --integrity-hash
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown flag"* ]]
+
+    run "$KK" --frobnicate
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown flag"* ]]
+}
+
+# bats test_tags=quick,full,stress
+@test "quick: encrypt rejects missing XDG_RUNTIME_DIR" {
+    echo "runtime" > f.txt
+    run env -u XDG_RUNTIME_DIR "$KK" f.txt --encrypt --ppfile pp
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"XDG_RUNTIME_DIR is not set"* ]]
+}
+
+# bats test_tags=quick,full,stress
+@test "quick: encrypt decrypt info and check" {
+    echo "hello quick" > f.txt
+    touch -d "2020-06-01 12:00:00 UTC" f.txt
+    local m0
+    m0=$(stat -c %Y f.txt)
+
+    run "$KK" f.txt --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+
+    run "$KK" f.txt --info --json --ppfile pp
+    [ "$status" -eq 0 ]
+    valid_json "$output"
+    [[ "$output" == *'"path_original": "f.txt"'* ]]
+    [[ "$output" == *'"path_real": '* ]]
+
+    rm -f f.txt
+    run "$KK" f.txt --decrypt --yes --ppfile pp
+    [ "$status" -eq 0 ]
+    [ "$(cat f.txt)" = "hello quick" ]
+    [ "$(stat -c %Y f.txt)" = "$m0" ]
+
+    run "$KK" --check --ppfile pp
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"all assets verified OK"* ]]
+}
+
+@test "quick: decrypt can restore file to a new path" {
+    bats_test_tags=quick,full,stress
+    echo "rename me" > f.txt
+    run "$KK" f.txt --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+    rm -f f.txt
+
+    run "$KK" f.txt --decrypt renamed.txt --yes --ppfile pp
+    [ "$status" -eq 0 ]
+    [ -f renamed.txt ]
+    [ "$(cat renamed.txt)" = "rename me" ]
+    [ ! -e f.txt ]
+}
+
+@test "quick: decrypt can restore a directory to a new path" {
+    bats_test_tags=quick,full,stress
+    mkdir -p srcdir/sub
+    echo "nested" > srcdir/sub/file.txt
+    run "$KK" srcdir --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+    rm -rf srcdir
+
+    run "$KK" srcdir --decrypt restored-dir --yes --ppfile pp
+    [ "$status" -eq 0 ]
+    [ -f restored-dir/sub/file.txt ]
+    [ "$(cat restored-dir/sub/file.txt)" = "nested" ]
+    [ ! -e srcdir ]
+}
+
+@test "quick: plain force encrypt duplicates existing asset" {
+    bats_test_tags=quick,full,stress
+    echo "hello quick" > f.txt
+    run "$KK" f.txt --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+
+    run "$KK" f.txt --force --ppfile pp
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"created .kk/"* ]]
+}
+
+@test "quick: encrypt writes a sibling .sha256 companion" {
+    bats_test_tags=quick,full,stress
+    echo "digest me" > f.txt
+    run "$KK" f.txt --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+    local asset
+    asset=$(ls .kk/*.kk | head -1)
+    [ -f "$asset.sha256" ]
+    [ "$(stat -c %a "$asset.sha256")" = "600" ]
+    # companion is sha256sum -c compatible and verifies OK
+    ( cd .kk && sha256sum -c -- "$(basename "$asset").sha256" ) > "$WORKDIR/digest.out" 2>&1
+    grep -Eq 'OK$' "$WORKDIR/digest.out"
+    # a directory asset also gets a companion
+    mkdir -p d && echo x > d/x.txt
+    run "$KK" d --encrypt --ppfile pp
+    [ "$status" -eq 0 ]
+    local dasset
+    dasset=$(ls .kk/*.kk | grep -v '\.sha256$' | sort | tail -1)
+    [ -f "$dasset.sha256" ]
+    # the companion must not be treated as an asset by the inventory
+    run "$KK" ls --ppfile pp
+    [ "$status" -eq 0 ]
+    ! [[ "$output" == *".sha256"* ]]
+}
+
+# ======================== Full Tests ========================
+# Tests from kk.bats that are not in kk.quick.bats - tagged as full, stress
+
+@test "full: --help prints usage and exits 0" {
+    bats_test_tags=full,stress
     run "$KK" --help
     [ "$status" -eq 0 ]
     [[ "$output" == *"usage"* ]]
 }
 
-@test "--version prints version and exits 0" {
+@test "full: --version prints version and exits 0" {
+    bats_test_tags=full,stress
     run "$KK" --version
     [ "$status" -eq 0 ]
     [ "$output" = "kk 0.2.9" ]
 }
 
-@test "--checksum prints script checksum and exits 0" {
+@test "full: --checksum prints script checksum and exits 0" {
+    bats_test_tags=full,stress
     run "$KK" --checksum
     [ "$status" -eq 0 ]
     [[ "$output" =~ ^[0-9a-f]{128}$ ]]
 }
 
-@test "legacy integrity maintenance flags are rejected" {
+@test "full: legacy integrity maintenance flags are rejected" {
+    bats_test_tags=full,stress
     run "$KK" --integrity-hash
     [ "$status" -eq 1 ]
     [[ "$output" == *"unknown flag"* ]]
@@ -186,57 +325,58 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"unknown flag"* ]]
 }
 
-@test "no arguments prints usage and exits 1" {
+@test "full: no arguments prints usage and exits 1" {
+    bats_test_tags=full,stress
     run "$KK"
     [ "$status" -eq 1 ]
     [[ "$output" == *"usage"* ]]
 }
 
-@test "unknown long flag is rejected" {
+@test "full: unknown long flag is rejected" {
+    bats_test_tags=full,stress
     run "$KK" --frobnicate
     [ "$status" -eq 1 ]
     [[ "$output" == *"unknown flag"* ]]
 }
 
-@test "extra positional argument is rejected" {
+@test "full: extra positional argument is rejected" {
+    bats_test_tags=full,stress
     run "$KK" a.txt b.txt
     [ "$status" -eq 1 ]
     [[ "$output" == *"unexpected extra argument"* ]]
 }
 
-@test "two action flags conflict" {
+@test "full: two action flags conflict" {
+    bats_test_tags=full,stress
     run "$KK" f.txt --encrypt --decrypt
     [ "$status" -eq 1 ]
     [[ "$output" == *"conflicting action flags"* ]]
 }
 
-@test "ls cannot be combined with action flags" {
+@test "full: ls cannot be combined with action flags" {
+    bats_test_tags=full,stress
     run "$KK" ls --encrypt
     [ "$status" -eq 1 ]
     [[ "$output" == *"'ls' cannot be combined"* ]]
 }
 
-@test "--ppfile without file argument fails" {
+@test "full: --ppfile without file argument fails" {
+    bats_test_tags=full,stress
     run "$KK" --ppfile
     [ "$status" -eq 1 ]
     [[ "$output" == *"--ppfile requires a file argument"* ]]
 }
 
-@test "--unlock outside ls is rejected" {
+@test "full: --unlock outside ls is rejected" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     run "$KK" f.txt --encrypt --unlock --ppfile pp
     [ "$status" -eq 1 ]
     [[ "$output" == *"unknown flag: --unlock"* ]]
 }
 
-@test "encrypt rejects missing XDG_RUNTIME_DIR" {
-    echo "runtime" > f.txt
-    run env -u XDG_RUNTIME_DIR "$KK" f.txt --encrypt --ppfile pp
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"XDG_RUNTIME_DIR is not set"* ]]
-}
-
-@test "encrypt rejects XDG_RUNTIME_DIR with unsafe mode" {
+@test "full: encrypt rejects XDG_RUNTIME_DIR with unsafe mode" {
+    bats_test_tags=full,stress
     mkdir runtime.bad
     chmod 755 runtime.bad
     echo "runtime" > f.txt
@@ -245,9 +385,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"must have mode 700"* ]]
 }
 
-# ======================== encrypt ========================
-
-@test "encrypt creates asset, keeps original, exit 0" {
+@test "full: encrypt creates asset, keeps original, exit 0" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt
     [ "$status" -eq 0 ]
@@ -255,20 +394,23 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ -f f.txt ]
 }
 
-@test "encrypt nonexistent path fails" {
-    enc nosuch.txt
+@test "full: encrypt nonexistent path fails" {
+    bats_test_tags=full,stress
+    enc f.txt
     [ "$status" -eq 1 ]
     [[ "$output" == *"no such file or directory"* ]]
     [ "$(asset_count)" -eq 0 ]
 }
 
-@test "encrypt path outside CWD is refused" {
+@test "full: encrypt path outside CWD is refused" {
+    bats_test_tags=full,stress
     run "$KK" ../outside.txt --encrypt --ppfile pp
     [ "$status" -eq 1 ]
     [[ "$output" == *"outside the current directory"* ]]
 }
 
-@test "duplicate encrypt without --force fails with hint" {
+@test "full: duplicate encrypt without --force fails with hint" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt
     enc f.txt
@@ -278,7 +420,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 1 ]
 }
 
-@test "duplicate encrypt with --force creates second asset" {
+@test "full: duplicate encrypt with --force creates second asset" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt
     enc f.txt --force
@@ -286,7 +429,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 2 ]
 }
 
-@test "same-second collision is waited out, not clobbered" {
+@test "full: same-second collision is waited out, not clobbered" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt --force
     enc f.txt --force
@@ -298,7 +442,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$e1" != "$e2" ]
 }
 
-@test "auto mode: bare path encrypts when no asset exists" {
+@test "full: auto mode: bare path encrypts when no asset exists" {
+    bats_test_tags=full,stress
     echo "auto" > g.txt
     run "$KK" g.txt --ppfile pp
     [ "$status" -eq 0 ]
@@ -309,7 +454,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"asset already exists"* ]]
 }
 
-@test "asset filename format: 14-digit timestamp + usec + short id + .kk" {
+@test "full: asset filename format: 14-digit timestamp + usec + short id + .kk" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt
     local e
@@ -317,27 +463,31 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$e" =~ ^[0-9]{14}\.[0-9]{6}-[0-9a-f]{10}\.kk$ ]]
 }
 
-@test ".kk dir is 700 and assets are 600" {
+@test "full: .kk dir is 700 and assets are 600" {
+    bats_test_tags=full,stress
     echo "hello" > f.txt
     enc f.txt
     [ "$(stat -c %a .kk)" = "700" ]
     [ "$(stat -c %a .kk/*.kk)" = "600" ]
 }
 
-@test "ciphertext does not contain plaintext" {
+@test "full: ciphertext does not contain plaintext" {
+    bats_test_tags=full,stress
     echo "needle-plain-text" > f.txt
     enc f.txt
     ! grep -q "needle-plain-text" .kk/*.kk
 }
 
-@test "directory encrypt records kind=dir and payload size" {
+@test "full: directory encrypt records kind=dir and payload size" {
+    bats_test_tags=full,stress
     mkdir d && echo a > d/1.txt
     enc d
     [ "$status" -eq 0 ]
     [[ "$output" == *"dir"* ]]
 }
 
-@test "empty directory round-trips" {
+@test "full: empty directory round-trips" {
+    bats_test_tags=full,stress
     mkdir ed
     enc ed
     [ "$status" -eq 0 ]
@@ -347,7 +497,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ -d ed ]
 }
 
-@test "nested path round-trips (sub/deep/f.txt)" {
+@test "full: nested path round-trips (sub/deep/f.txt)" {
+    bats_test_tags=full,stress
     mkdir -p sub/deep && echo x > sub/deep/f.txt
     enc sub/deep/f.txt
     rm -f sub/deep/f.txt
@@ -356,7 +507,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat sub/deep/f.txt)" = "x" ]
 }
 
-@test "path with ./ prefix normalizes" {
+@test "full: path with ./ prefix normalizes" {
+    bats_test_tags=full,stress
     echo "dot" > f.txt
     run "$KK" ./f.txt --encrypt --ppfile pp
     [ "$status" -eq 0 ]
@@ -364,7 +516,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"path_original=f.txt"* ]]
 }
 
-@test "directory path with trailing slash normalizes" {
+@test "full: directory path with trailing slash normalizes" {
+    bats_test_tags=full,stress
     mkdir d && echo a > d/1.txt
     run "$KK" d/ --encrypt --ppfile pp
     [ "$status" -eq 0 ]
@@ -372,7 +525,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"path_original=d"* ]]
 }
 
-@test "filename with spaces round-trips" {
+@test "full: filename with spaces round-trips" {
+    bats_test_tags=full,stress
     echo "spacy" > "my file.txt"
     enc "my file.txt"
     rm -f "my file.txt"
@@ -381,7 +535,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat "my file.txt")" = "spacy" ]
 }
 
-@test "filename with leading dash round-trips" {
+@test "full: filename with leading dash round-trips" {
+    bats_test_tags=full,stress
     echo "dash" > ./-dash.txt
     run "$KK" ./-dash.txt --encrypt --ppfile pp
     [ "$status" -eq 0 ]
@@ -391,7 +546,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat ./-dash.txt)" = "dash" ]
 }
 
-@test "symlink is archived as its content" {
+@test "full: symlink is archived as its content" {
+    bats_test_tags=full,stress
     echo "real" > real.txt
     ln -s real.txt link.txt
     enc link.txt
@@ -407,7 +563,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -L link.txt ]
 }
 
-@test "path with .. components collapses lexically and round-trips" {
+@test "full: path with .. components collapses lexically and round-trips" {
+    bats_test_tags=full,stress
     mkdir -p m1 && echo "lex" > m1/l.txt
     run "$KK" m1/../m1/l.txt --encrypt --ppfile pp
     [ "$status" -eq 0 ]
@@ -419,20 +576,23 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat m1/l.txt)" = "lex" ]
 }
 
-@test "path escaping CWD via .. is refused" {
+@test "full: path escaping CWD via .. is refused" {
+    bats_test_tags=full,stress
     run "$KK" ../outside.txt --encrypt --ppfile pp
     [ "$status" -eq 1 ]
     [[ "$output" == *"outside the current directory"* ]]
 }
 
-@test "path escaping CWD via .. in the middle is refused" {
+@test "full: path escaping CWD via .. in the middle is refused" {
+    bats_test_tags=full,stress
     mkdir -p sub
     run "$KK" sub/../../etc/passwd --encrypt --ppfile pp
     [ "$status" -eq 1 ]
     [[ "$output" == *"outside the current directory"* ]]
 }
 
-@test "socket-looking target is stubbed" {
+@test "full: socket-looking target is stubbed" {
+    bats_test_tags=full,stress
     run "$KK" myhost:443
     [ "$status" -eq 1 ]
     [[ "$output" == *"socket mode not implemented"* ]]
@@ -441,9 +601,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"socket mode not implemented"* ]]
 }
 
-# ======================== decrypt ========================
-
-@test "decrypt restores content and mtime" {
+@test "full: decrypt restores content and mtime" {
+    bats_test_tags=full,stress
     echo "time test" > f.txt
     touch -d "2020-06-01 12:00:00 UTC" f.txt
     local m0; m0=$(stat -c %Y f.txt)
@@ -455,13 +614,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(stat -c %Y f.txt)" = "$m0" ]
 }
 
-@test "decrypt nonexistent target fails" {
-    dec nosuch.txt
+@test "full: decrypt nonexistent target fails" {
+    bats_test_tags=full,stress
+    dec f.txt
     [ "$status" -eq 1 ]
     [[ "$output" == *"no .kk assets found"* ]]
 }
 
-@test "decrypt with wrong passphrase fails, creates nothing" {
+@test "full: decrypt with wrong passphrase fails, creates nothing" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -471,7 +632,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "decrypt into existing file asks for confirmation (stdin y)" {
+@test "full: decrypt into existing file asks for confirmation (stdin y)" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     echo "changed" > f.txt
@@ -480,7 +642,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "orig" ]
 }
 
-@test "decrypt into existing file aborts on confirmation n" {
+@test "full: decrypt into existing file aborts on confirmation n" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     echo "changed" > f.txt
@@ -490,7 +653,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "changed" ]
 }
 
-@test "decrypt --yes overwrites existing file without prompt" {
+@test "full: decrypt --yes overwrites existing file without prompt" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     echo "changed" > f.txt
@@ -499,7 +663,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "orig" ]
 }
 
-@test "decrypt --force overwrites existing file without prompt" {
+@test "full: decrypt --force overwrites existing file without prompt" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     echo "changed" > f.txt
@@ -508,7 +673,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "orig" ]
 }
 
-@test "decrypt can restore file to a new path" {
+@test "full: decrypt can restore file to a new path" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     rm -f f.txt
@@ -519,7 +685,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "decrypt can restore a directory to a new path" {
+@test "full: decrypt can restore a directory to a new path" {
+    bats_test_tags=full,stress
     mkdir -p srcdir/sub
     echo "nested" > srcdir/sub/file.txt
     run "$KK" srcdir --encrypt --ppfile pp
@@ -532,7 +699,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e srcdir ]
 }
 
-@test "decrypt --force with --dry-run changes nothing" {
+@test "full: decrypt --force with --dry-run changes nothing" {
+    bats_test_tags=full,stress
     echo "orig" > f.txt
     enc f.txt
     echo "changed" > f.txt
@@ -542,7 +710,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "changed" ]
 }
 
-@test "decrypt with no target auto-picks the only asset" {
+@test "full: decrypt with no target auto-picks the only asset" {
+    bats_test_tags=full,stress
     echo "solo" > f.txt
     enc f.txt
     rm -f f.txt
@@ -551,13 +720,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "solo" ]
 }
 
-@test "decrypt with no target and no assets fails" {
+@test "full: decrypt with no target and no assets fails" {
+    bats_test_tags=full,stress
     run "$KK" --decrypt --yes --ppfile pp
     [ "$status" -eq 1 ]
     [[ "$output" == *"no .kk assets found"* ]]
 }
 
-@test "decrypt picks newest asset with --yes" {
+@test "full: decrypt picks newest asset with --yes" {
+    bats_test_tags=full,stress
     echo A > f.txt
     enc f.txt
     sleep 1.1
@@ -569,7 +740,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "B" ]
 }
 
-@test "decrypt interactive selection: pick 2 restores older asset" {
+@test "full: decrypt interactive selection: pick 2 restores older asset" {
+    bats_test_tags=full,stress
     echo A > f.txt
     enc f.txt
     sleep 1.1
@@ -581,7 +753,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "A" ]
 }
 
-@test "decrypt selection out of range fails" {
+@test "full: decrypt selection out of range fails" {
+    bats_test_tags=full,stress
     echo A > f.txt
     enc f.txt
     sleep 1.1
@@ -593,7 +766,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$cap_out" == *"out of range"* ]]
 }
 
-@test "decrypt selection non-numeric fails" {
+@test "full: decrypt selection non-numeric fails" {
+    bats_test_tags=full,stress
     echo A > f.txt
     enc f.txt
     sleep 1.1
@@ -605,7 +779,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$cap_out" == *"invalid selection"* ]]
 }
 
-@test "decrypt refuses when target path is now a non-empty directory" {
+@test "full: decrypt refuses when target path is now a non-empty directory" {
+    bats_test_tags=full,stress
     echo "file content" > f.txt
     enc f.txt
     rm -f f.txt
@@ -616,7 +791,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt/protected.txt)" = "keep me" ]
 }
 
-@test "decrypt replaces an EMPTY blocking directory (tar behavior)" {
+@test "full: decrypt replaces an EMPTY blocking directory (tar behavior)" {
+    bats_test_tags=full,stress
     echo "file content" > f.txt
     enc f.txt
     rm -f f.txt
@@ -627,9 +803,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "file content" ]
 }
 
-# ======================== cat / info / ls ========================
-
-@test "--cat streams content to stdout and touches no disk file" {
+@test "full: --cat streams content to stdout and touches no disk file" {
+    bats_test_tags=full,stress
     echo "hello world" > f.txt
     enc f.txt
     rm -f f.txt
@@ -639,7 +814,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "--info shows metadata for the given path" {
+@test "full: --info shows metadata for the given path" {
+    bats_test_tags=full,stress
     echo "meta" > f.txt
     enc f.txt
     run "$KK" f.txt --info --ppfile pp
@@ -654,7 +830,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"orig_ctime="* ]]
 }
 
-@test "external KK_DIR records original placement metadata" {
+@test "full: external KK_DIR records original placement metadata" {
+    bats_test_tags=full,stress
     local shared_kk="$WORKDIR/shared-assets"
     echo "meta" > f.txt
     run env KK_DIR="$shared_kk" "$KK" f.txt --encrypt --ppfile pp
@@ -667,7 +844,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"kk_dir_real=$shared_kk"* ]]
 }
 
-@test "orphan assembly is pruned with --yes before encrypt" {
+@test "full: orphan assembly is pruned with --yes before encrypt" {
+    bats_test_tags=full,stress
     local shared_kk="$WORKDIR/orphan-assets"
     local namespace orphanassembly meta_file orphanpending
 
@@ -706,7 +884,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"created $shared_kk/"* ]]
 }
 
-@test "orphan assembly aborts non-interactive mutate without --yes" {
+@test "full: orphan assembly aborts non-interactive mutate without --yes" {
+    bats_test_tags=full,stress
     local shared_kk="$WORKDIR/orphan-assets-no-auto"
     local namespace orphanassembly meta_file
 
@@ -734,7 +913,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"rerun with --yes or remove manually"* ]]
 }
 
-@test "startup warns about invalid kk candidates with wrong magic" {
+@test "full: startup warns about invalid kk candidates with wrong magic" {
+    bats_test_tags=full,stress
     mkdir .kk
     printf '%s\nrest\n' "$(printf 'magic=nope\ncreated=19700101000000.000000\n' | base64 -w0)" > .kk/bad.kk
     run "$KK" ls
@@ -743,18 +923,21 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"bad.kk (magic mismatch)"* ]]
 }
 
-@test "--info with no target and no assets fails" {
+@test "full: --info with no target and no assets fails" {
+    bats_test_tags=full,stress
     run "$KK" --info --ppfile pp
     [ "$status" -eq 1 ]
 }
 
-@test "ls with no assets exits 0 with message" {
+@test "full: ls with no assets exits 0 with message" {
+    bats_test_tags=full,stress
     run "$KK" ls
     [ "$status" -eq 0 ]
     [[ "$output" == *"no .kk assets found"* ]]
 }
 
-@test "ls shows header and numbered rows" {
+@test "full: ls shows header and numbered rows" {
+    bats_test_tags=full,stress
     echo "one" > a.txt && echo "two" > b.txt
     enc a.txt && enc b.txt
     run "$KK" ls
@@ -766,7 +949,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"2   "* ]]
 }
 
-@test "ls --json is valid JSON with correct path" {
+@test "full: ls --json is valid JSON with correct path" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     enc a.txt
     run "$KK" ls --json --ppfile pp
@@ -776,13 +960,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *'"state": "locked"'* ]]
 }
 
-@test "ls --json with no assets is valid empty JSON" {
+@test "full: ls --json with no assets is valid empty JSON" {
+    bats_test_tags=full,stress
     run "$KK" ls --json
     [ "$status" -eq 0 ]
     valid_json "$output"
 }
 
-@test "flag order does not matter (--json ls vs ls --json)" {
+@test "full: flag order does not matter (--json ls vs ls --json)" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     enc a.txt
     run "$KK" --json ls --ppfile pp
@@ -791,7 +977,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *'"path": "a.txt"'* ]]
 }
 
-@test "ls auto-unlocks and shows human-readable asset rows" {
+@test "full: ls auto-unlocks and shows human-readable asset rows" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     echo "two" > b.txt
     enc a.txt && enc b.txt
@@ -803,7 +990,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *"state"* ]]
 }
 
-@test "ls --json auto-unlocks with unlocked metadata" {
+@test "full: ls --json auto-unlocks with unlocked metadata" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     enc a.txt
     run "$KK" ls --json --ppfile pp
@@ -813,7 +1001,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *'"kind": "file"'* ]]
 }
 
-@test "ls with wrong passphrase fails cleanly" {
+@test "full: ls with wrong passphrase fails cleanly" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     enc a.txt
     run "$KK" ls --ppfile ppwrong
@@ -821,7 +1010,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"no assets in '.kk' unlocked with the current passphrase"* ]]
 }
 
-@test "ls warns on mixed passphrases and lists unlocked subset" {
+@test "full: ls warns on mixed passphrases and lists unlocked subset" {
+    bats_test_tags=full,stress
     local mixed_a="$WORKDIR/mixed-a"
     local mixed_b="$WORKDIR/mixed-b"
 
@@ -843,7 +1033,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *"b.txt"* ]]
 }
 
-@test "unlock emits shell export and search works without ppfile" {
+@test "full: unlock emits shell export and search works without ppfile" {
+    bats_test_tags=full,stress
     echo "alpha" > alpha.txt
     enc alpha.txt
     local session_export
@@ -860,7 +1051,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     unset KK_SESSION
 }
 
-@test "unlock session lets info reuse cached metadata without ppfile" {
+@test "full: unlock session reuses metadata across invocations" {
+    bats_test_tags=full,stress
     echo "meta" > f.txt
     enc f.txt
     local session_export
@@ -876,13 +1068,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     unset KK_SESSION
 }
 
-@test "lock prints shell cleanup even when no session is active" {
+@test "full: lock prints shell cleanup even when no session is active" {
+    bats_test_tags=full,stress
     run "$KK" lock
     [ "$status" -eq 0 ]
     [[ "$output" == *"unset KK_SESSION"* ]]
 }
 
-@test "explicit encrypt refuses partial vault view on mixed passphrases" {
+@test "full: explicit encrypt refuses partial vault view on mixed passphrases" {
+    bats_test_tags=full,stress
     local mixed_a="$WORKDIR/mixed-a"
     local mixed_b="$WORKDIR/mixed-b"
 
@@ -904,7 +1098,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(find "$mixed_a" -maxdepth 1 -name "*.kk" | wc -l)" -eq 2 ]
 }
 
-@test "rm refuses partial vault view on mixed passphrases" {
+@test "full: rm refuses partial vault view on mixed passphrases" {
+    bats_test_tags=full,stress
     local mixed_a="$WORKDIR/mixed-a"
     local mixed_b="$WORKDIR/mixed-b"
 
@@ -925,7 +1120,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(find "$mixed_a" -maxdepth 1 -name "*.kk" | wc -l)" -eq 2 ]
 }
 
-@test "check refuses partial vault view on mixed passphrases" {
+@test "full: check refuses partial vault view on mixed passphrases" {
+    bats_test_tags=full,stress
     local mixed_a="$WORKDIR/mixed-a"
     local mixed_b="$WORKDIR/mixed-b"
 
@@ -945,7 +1141,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"partial vault view"* ]]
 }
 
-@test "search finds unlocked metadata paths" {
+@test "full: search finds unlocked metadata paths" {
+    bats_test_tags=full,stress
     echo "alpha" > alpha.txt
     echo "beta" > beta.txt
     enc alpha.txt && enc beta.txt
@@ -956,7 +1153,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *"beta.txt"* ]]
 }
 
-@test "search --json is valid JSON with unlocked metadata" {
+@test "full: search --json is valid JSON with unlocked metadata" {
+    bats_test_tags=full,stress
     echo "alpha" > alpha.txt
     enc alpha.txt
     run "$KK" search alpha --json --ppfile pp
@@ -966,7 +1164,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *'"kind": "file"'* ]]
 }
 
-@test "search with wrong passphrase fails cleanly" {
+@test "full: search with wrong passphrase fails cleanly" {
+    bats_test_tags=full,stress
     echo "alpha" > alpha.txt
     enc alpha.txt
     run "$KK" search alpha --ppfile ppwrong
@@ -974,13 +1173,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"no assets in '.kk' unlocked with the current passphrase"* ]]
 }
 
-@test "search requires a pattern argument" {
+@test "full: search requires a pattern argument" {
+    bats_test_tags=full,stress
     run "$KK" search
     [ "$status" -eq 1 ]
     [[ "$output" == *"'search' requires a pattern argument"* ]]
 }
 
-@test "--info --json is valid JSON" {
+@test "full: --info --json is valid JSON" {
+    bats_test_tags=full,stress
     echo "meta" > f.txt
     enc f.txt
     run "$KK" f.txt --info --json --ppfile pp
@@ -991,16 +1192,16 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *'"version": "0.2.9"'* ]]
 }
 
-@test "ls --json output passes python json.tool" {
+@test "full: ls --json output passes python json.tool" {
+    bats_test_tags=full,stress
     echo "one" > a.txt
     enc a.txt
     run bash -c "$KK ls --json --ppfile pp | python3 -m json.tool >/dev/null"
     [ "$status" -eq 0 ]
 }
 
-# ======================== check ========================
-
-@test "--check passes on clean state" {
+@test "full: --check passes on clean state" {
+    bats_test_tags=full,stress
     echo "ok" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1010,7 +1211,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"all assets verified OK"* ]]
 }
 
-@test "--check detects MISSING original" {
+@test "full: --check detects MISSING original" {
+    bats_test_tags=full,stress
     echo "ok" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1019,7 +1221,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"MISSING"* ]]
 }
 
-@test "--check detects MISMATCH content" {
+@test "full: --check detects MISMATCH content" {
+    bats_test_tags=full,stress
     echo "ok" > f.txt
     enc f.txt
     echo "tampered" > f.txt
@@ -1028,7 +1231,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"MISMATCH"* ]]
 }
 
-@test "--check detects MTIME_DIFF" {
+@test "full: --check detects MTIME_DIFF" {
+    bats_test_tags=full,stress
     echo "ok" > f.txt
     enc f.txt
     run "$KK" --check --ppfile pp
@@ -1040,7 +1244,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"MTIME_DIFF"* ]]
 }
 
-@test "--check with path filter checks only that asset" {
+@test "full: --check with path filter checks only that asset" {
+    bats_test_tags=full,stress
     echo "a" > a.txt && echo "b" > b.txt
     enc a.txt && enc b.txt
     rm -f a.txt
@@ -1050,14 +1255,16 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *"a.txt"* ]]
 }
 
-@test "--check on directory asset passes when tree intact" {
+@test "full: --check on directory asset passes when tree intact" {
+    bats_test_tags=full,stress
     mkdir d && echo a > d/1.txt && echo b > d/2.txt
     enc d
     run "$KK" --check --ppfile pp
     [ "$status" -eq 0 ]
 }
 
-@test "--check on directory asset detects modified member" {
+@test "full: --check on directory asset detects modified member" {
+    bats_test_tags=full,stress
     mkdir d && echo a > d/1.txt
     enc d
     echo modified > d/1.txt
@@ -1066,7 +1273,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"MISMATCH"* ]]
 }
 
-@test "decrypt rejects tampered ciphertext before extraction" {
+@test "full: decrypt rejects tampered ciphertext before extraction" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1085,7 +1293,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "decrypt rejects tampered metadata before extraction" {
+@test "full: decrypt rejects tampered metadata before extraction" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1106,7 +1315,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "decrypt rejects archive members with parent traversal" {
+@test "full: decrypt rejects archive members with parent traversal" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1120,7 +1330,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"unsafe archive member path"* ]]
 }
 
-@test "decrypt preserves relative symlinks as symlinks" {
+@test "full: decrypt preserves relative symlinks as symlinks" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1136,7 +1347,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat safe/link.txt)" = "bad" ]
 }
 
-@test "decrypt rejects archive members with escaping symlink targets" {
+@test "full: decrypt rejects archive members with escaping symlink targets" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1152,7 +1364,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"unsafe archive symlink"* ]]
 }
 
-@test "decrypt --force overrides escaping symlink target safety gate" {
+@test "full: decrypt --force overrides escaping symlink target safety gate" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1169,7 +1382,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(readlink safe/link.txt)" = "/etc/hostname" ]
 }
 
-@test "corrupted metadata header is skipped by ls" {
+@test "full: corrupted metadata header is skipped by ls" {
+    bats_test_tags=full,stress
     echo "sec" > f.txt
     enc f.txt
     local e
@@ -1180,9 +1394,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"no .kk assets found"* ]]
 }
 
-# ======================== rm / gc ========================
-
-@test "--rm with confirmation y removes the asset" {
+@test "full: --rm with confirmation y removes the asset" {
+    bats_test_tags=full,stress
     echo "rm me" > f.txt
     enc f.txt
     cap "y" "$KK" f.txt --rm --ppfile pp
@@ -1190,7 +1403,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 0 ]
 }
 
-@test "--rm with confirmation n aborts" {
+@test "full: --rm with confirmation n aborts" {
+    bats_test_tags=full,stress
     echo "rm me" > f.txt
     enc f.txt
     cap "n" "$KK" f.txt --rm --ppfile pp
@@ -1199,7 +1413,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 1 ]
 }
 
-@test "--rm --yes removes without prompt" {
+@test "full: --rm --yes removes without prompt" {
+    bats_test_tags=full,stress
     echo "rm me" > f.txt
     enc f.txt
     run "$KK" f.txt --rm --yes --ppfile pp
@@ -1207,7 +1422,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 0 ]
 }
 
-@test "--rm --force removes without prompt" {
+@test "full: --rm --force removes without prompt" {
+    bats_test_tags=full,stress
     echo "rm me" > f.txt
     enc f.txt
     run "$KK" f.txt --rm --force --ppfile pp
@@ -1215,7 +1431,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 0 ]
 }
 
-@test "--rm only removes the filtered asset" {
+@test "full: --rm only removes the filtered asset" {
+    bats_test_tags=full,stress
     echo "a" > a.txt && echo "b" > b.txt
     enc a.txt && enc b.txt
     run "$KK" a.txt --rm --yes --ppfile pp
@@ -1228,13 +1445,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$status" -eq 1 ]
 }
 
-@test "--rm with no matching asset fails" {
+@test "full: --rm with no matching asset fails" {
+    bats_test_tags=full,stress
     run "$KK" nosuch.txt --rm --yes
     [ "$status" -eq 1 ]
     [[ "$output" == *"no .kk assets found"* ]]
 }
 
-@test "--rm --dry-run removes nothing" {
+@test "full: --rm --dry-run removes nothing" {
+    bats_test_tags=full,stress
     echo "rm me" > f.txt
     enc f.txt
     run "$KK" f.txt --rm --dry-run --ppfile pp
@@ -1243,13 +1462,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 1 ]
 }
 
-@test "--rm --dry-run with no assets says nothing to remove" {
+@test "full: --rm --dry-run with no assets says nothing to remove" {
+    bats_test_tags=full,stress
     run "$KK" f.txt --rm --dry-run
     [ "$status" -eq 0 ]
     [[ "$output" == *"nothing to remove"* ]]
 }
 
-@test "--gc-assembly removes orphan runtime residue and empty namespaces" {
+@test "full: --gc-assembly removes orphan runtime residue and empty namespaces" {
+    bats_test_tags=full,stress
     local shared_kk="$WORKDIR/gc-assembly-assets"
     local namespace orphan_run orphan_pending_lock orphan_pending_file meta_file
 
@@ -1283,9 +1504,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -d "$namespace" ]
 }
 
-# ======================== dry-run matrix ========================
-
-@test "dry-run encrypt creates nothing" {
+@test "full: dry-run encrypt creates nothing" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     run "$KK" f.txt --encrypt --dry-run --ppfile pp
     [ "$status" -eq 0 ]
@@ -1294,7 +1514,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ -f f.txt ]
 }
 
-@test "dry-run encrypt without force warns about existing asset" {
+@test "full: dry-run encrypt without force warns about existing asset" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     run "$KK" f.txt --encrypt --dry-run --ppfile pp
@@ -1302,7 +1523,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"without --force this would abort"* ]]
 }
 
-@test "dry-run encrypt with --force does not warn" {
+@test "full: dry-run encrypt with --force does not warn" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     run "$KK" f.txt --encrypt --dry-run --force --ppfile pp
@@ -1310,7 +1532,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     ! [[ "$output" == *"without --force this would abort"* ]]
 }
 
-@test "dry-run decrypt creates nothing" {
+@test "full: dry-run decrypt creates nothing" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     rm -f f.txt
@@ -1320,13 +1543,15 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-@test "dry-run decrypt with no assets says nothing to do" {
+@test "full: dry-run decrypt with no assets says nothing to do" {
+    bats_test_tags=full,stress
     run "$KK" f.txt --decrypt --dry-run --ppfile pp
     [ "$status" -eq 0 ]
     [[ "$output" == *"no assets found - nothing to do"* ]]
 }
 
-@test "dry-run decrypt announces overwrite requirement" {
+@test "full: dry-run decrypt announces overwrite requirement" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     run "$KK" f.txt --decrypt --dry-run --ppfile pp
@@ -1334,7 +1559,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"overwrite: yes"* ]]
 }
 
-@test "dry-run ls/check/selftest announce no destructive changes" {
+@test "full: dry-run ls/check/selftest announce no destructive changes" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     run "$KK" ls --dry-run
@@ -1348,7 +1574,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"performs no destructive changes"* ]]
 }
 
-@test "dry-run info/cat announce read-only" {
+@test "full: dry-run info/cat announce read-only" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     enc f.txt
     run "$KK" f.txt --info --dry-run --ppfile pp
@@ -1359,9 +1586,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"read-only"* ]]
 }
 
-# ======================== passphrase handling ========================
-
-@test "non-interactive without ppfile is refused" {
+@test "full: non-interactive without ppfile is refused" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     # stdin must be non-tty; bats run inherits the session tty otherwise
     run bash -c 'exec "$0" f.txt --encrypt' "$KK" </dev/null
@@ -1369,14 +1595,16 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"needs a tty"* ]]
 }
 
-@test "missing ppfile is refused" {
+@test "full: missing ppfile is refused" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     run "$KK" f.txt --encrypt --ppfile nosuch
     [ "$status" -eq 1 ]
     [[ "$output" == *"cannot read --ppfile"* ]]
 }
 
-@test "unreadable ppfile is refused" {
+@test "full: unreadable ppfile is refused" {
+    bats_test_tags=full,stress
     [ "$(id -u)" -eq 0 ] && skip "running as root; chmod 000 is still readable"
     echo "x" > f.txt
     chmod 000 pp
@@ -1385,7 +1613,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [[ "$output" == *"cannot read --ppfile"* ]]
 }
 
-@test "only first line of ppfile is used" {
+@test "full: only first line of ppfile is used" {
+    bats_test_tags=full,stress
     printf 'line-one\nline-two\n' > pp2
     chmod 600 pp2
     echo "x" > f.txt
@@ -1399,7 +1628,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "x" ]
 }
 
-@test "passphrase with special characters round-trips" {
+@test "full: passphrase with special characters round-trips" {
+    bats_test_tags=full,stress
     printf 'p@$$w0rd! "quoted" %%s\n' > ppspec
     chmod 600 ppspec
     echo "spec" > f.txt
@@ -1411,7 +1641,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "spec" ]
 }
 
-@test "empty passphrase file round-trips consistently" {
+@test "full: empty passphrase file round-trips consistently" {
+    bats_test_tags=full,stress
     : > ppempty
     chmod 600 ppempty
     echo "empty" > f.txt
@@ -1423,7 +1654,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(cat f.txt)" = "empty" ]
 }
 
-@test "wrong passphrase on encrypt-then-decrypt never decrypts" {
+@test "full: wrong passphrase on encrypt-then-decrypt never decrypts" {
+    bats_test_tags=full,stress
     echo "x" > f.txt
     run "$KK" f.txt --encrypt --ppfile pp
     [ "$status" -eq 0 ]
@@ -1433,17 +1665,18 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ ! -e f.txt ]
 }
 
-# ======================== selftest ========================
-
-@test "--selftest passes" {
+@test "full: --selftest passes" {
+    bats_test_tags=full,stress
     run bash -c 'exec "$0" --selftest </dev/null' "$KK"
     [ "$status" -eq 0 ]
     [[ "$output" == *"selftest PASSED"* ]]
 }
 
-# ======================== stress ========================
+# ======================== Stress Tests ========================
+# Tests from kk.bats that are specifically marked as stress tests - tagged as stress
 
 @test "stress: 20 files encrypt + check + decrypt + compare" {
+    bats_test_tags=stress
     local i
     mkdir -p src && cd src
     for i in $(seq 1 20); do
@@ -1479,6 +1712,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 }
 
 @test "stress: directory with 100 files round-trips" {
+    bats_test_tags=stress
     mkdir big
     local i
     for i in $(seq 1 100); do
@@ -1498,6 +1732,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 }
 
 @test "stress: concurrent encrypts sharing KK_DIR leave no residue" {
+    bats_test_tags=stress
     local shared_kk="$WORKDIR/shared-concurrent-assets"
     local namespace runs_dir rc=0 i pid
     local -a pids=()
@@ -1532,6 +1767,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 }
 
 @test "stress: concurrent decrypts sharing KK_DIR leave no residue" {
+    bats_test_tags=stress
     local shared_kk="$WORKDIR/shared-concurrent-decrypt-assets"
     local namespace runs_dir rc=0 i pid
     local -a pids=()
@@ -1570,6 +1806,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 }
 
 @test "stress: rapid-fire encrypts never lose an asset" {
+    bats_test_tags=stress
     local i
     for i in $(seq 1 10); do
         echo "rapid-$i" > "r$i.txt"
@@ -1579,7 +1816,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ "$(asset_count)" -eq 10 ]
 }
 
-@test "full suite: runtime parent leaves no orphan namespaces" {
+@test "stress: full suite: runtime parent leaves no orphan namespaces" {
+    bats_test_tags=stress
     [[ -n "${RUNTIME_PARENT:-}" ]] || skip "no safe XDG_RUNTIME_DIR available"
     local leaked
     leaked=$(runtime_print_new_namespaces)
@@ -1589,17 +1827,10 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     [ -z "$leaked" ]
 }
 
-@test "kk . properly handles current directory restore" {
-    # Test that 'kk .' works correctly and doesn't fail with "path is outside current directory"
-    # This ensures the canonical path resolution fix for restore_rel="." is working
-    echo "test content" > test-file.txt
-    enc test-file.txt
-    
-    # Test that we can decrypt to current directory (kk .) - this was previously failing
-    run "$KK" test-file.txt --decrypt --yes --ppfile pp
-    [ "$status" -eq 0 ]
-    
-    # Verify the file was restored correctly
-    [ -f test-file.txt ]
-    [[ "$(< test-file.txt)" == "test content" ]]
-}
+# The tests from kk.quick.bats that are duplicated are:
+# 1. "encrypt rejects missing XDG_RUNTIME_DIR" 
+# 2. "decrypt can restore file to a new path"
+# 3. "decrypt can restore a directory to a new path"
+# 4. "kk . properly handles current directory restore"
+
+# These have been merged by giving them the tags=quick,full,stress as specified.
