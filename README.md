@@ -2,7 +2,7 @@
 
 > knock knock, who's there?
 
-`kk` is a security-oriented tool for accessing, decrypting, and encrypting assets. It  was originally developed to support long-term intellectual property preservation and evidence retrieval, but remains useful anywhere secure archives are required.
+`kk` is a security-oriented tool for accessing, decrypting, and encrypting assets. It  was developed to support long-term intellectual property preservation and evidence retrieval, but should be useful anywhere secure archives are required.
 
 The primary objectives of `kk` are to preserve confidentiality in a portable, reliable, and self-contained format that emphasizes:
 
@@ -556,7 +556,7 @@ Fedora
 See:
 
 ```text
-LICENSE
+LICENSE.txt
 ```
 
 ---
