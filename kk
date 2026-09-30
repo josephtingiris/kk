@@ -17,9 +17,9 @@
 #   asset       : .kk/YYYYMMDDHHMMSS-<id>.kk = [base64 public header][metadata ciphertext][payload ciphertext]
 #   metadata    : path/hash/timestamp details are encrypted in a small metadata block
 #
-# dependencies  : bash 4+, awk, gnu coreutils, gnu tar, gzip, openssl 3.5+.
+# dependencies  : bash 4+, awk, gnu coreutils, gnu tar, gzip, openssl 3.5+
 #
-readonly _KK_CHECKSUM_HASH="d093f949a0ff007bdd9f02f20b5bef6bb29438a918d0ce41fac9ab98e3faa5b0503bbf42abb49573f41bc86c825386b15fdf38115005708dfd96655abff3c7ea"
+readonly _KK_CHECKSUM_HASH="a75399d7811ec53e815517524563849a243544d9367fc6763984d9898cc74c2eb4ed9294d39c379e87fd7542d6c0c4ab9012b3b9557611b5c684cb02ca2b7281"
 #
 # -----BEGIN CHECKSUM HASH-----
 
@@ -75,28 +75,7 @@ fi
 
 # -- runtime configuration --
 
-# NOTE: 'runtime' explains the scope of a single invocation of kk, while 'run' and 'runs' refer to the potential of multiple runtimes running simultaneously, each with its own assembly directory and unique run id.
-
-# expand a leading tilde in a path exactly as bash would: ~ or ~user
-print_path_tilde_expand() { # $1 = path -> path with leading tilde expanded
-    local p="$1"
-    if [[ "$p" == "~/"* ]]; then
-        printf '%s%s\n' "$HOME" "${p#\~}"
-    elif [[ "$p" == "~" ]]; then
-        printf '%s\n' "$HOME"
-    elif [[ "$p" == "~"* ]]; then
-        local user home
-        user="${p%%/*}"
-        home=$(getent passwd "$user" 2> /dev/null | cut -d: -f6)
-        if [[ -n "$home" ]]; then
-            printf '%s%s\n' "$home" "${p#"$user"}"
-        else
-            printf '%s\n' "$p"
-        fi
-    else
-        printf '%s\n' "$p"
-    fi
-}
+# NOTE: 'runtime' explains the scope of a single invocation of kk, while 'run' and 'runs' refer to the potential of multiple runtimes running simultaneously, each with its own assembly directory and unique run id
 
 readonly KK_ASSEMBLY_ASSET_ID_RANDOM_BYTES=5
 readonly KK_ASSEMBLY_META_FILE="run.meta"
@@ -108,11 +87,19 @@ readonly KK_AUTH_SCHEME="etm-hmac-sha512-kk-0.1"
 readonly KK_CIPHER="aes-256-cbc" # inner cipher (AEAD/GCM unsupported by openssl enc)
 readonly KK_COLLISION_RETRIES=16
 
-# a ./.kk file overrides all, including export KK_DIR
+# a ./.kk file overrides all, including an exported KK_DIR
 KK_DIR_TYPE=".kk"
 if [ -f "${KK_DIR_TYPE}" ] && [ -r "${KK_DIR_TYPE}" ]; then
     if [ -s "${KK_DIR_TYPE}" ]; then
-        export KK_DIR="$(print_path_tilde_expand "$(cat "${KK_DIR_TYPE}" | grep -v '^#' | head -n 1)")"
+        while IFS= read -r kkline; do
+            [[ "$kkline" =~ ^# ]] && continue
+            [[ -z "$kkline" ]] && continue
+            export KK_DIR="$kkline"
+            break
+        done < "${KK_DIR_TYPE}"
+        unset -v kkline
+
+        export KK_DIR="${KK_DIR/#\~/$HOME}"
     else
         echo "kk: error: ${KK_DIR_TYPE} is a zero byte file" >&2
         exit 1
@@ -238,7 +225,7 @@ aborting() {
     exit 1
 }
 
-# identify whether a path currently names a file or directory.
+# identify whether a path currently names a file or directory
 is_file_or_dir() { # $1 = path -> file|dir
     if [[ -d "$1" ]]; then
         printf 'dir\n'
@@ -249,7 +236,7 @@ is_file_or_dir() { # $1 = path -> file|dir
     fi
 }
 
-# detect host:port style socket targets.
+# detect host:port style socket targets
 is_network_socket() { # $1 = target
     if [[ -e "$1" ]]; then
         return 1
@@ -279,7 +266,7 @@ print_error() { printf 'kk: error: %s\n' "$*" >&2; }
 # print an informational message to stdout
 print_info() { printf 'kk: %s\n' "$*"; }
 
-# escape a string for JSON string output.
+# escape a string for JSON string output
 print_json_escape() {
     local s="$1"
     s=${s//\\/\\\\}
@@ -290,32 +277,14 @@ print_json_escape() {
     printf '%s' "$s"
 }
 
-# print the path's age in whole seconds from its mtime
-print_path_age_seconds() { # $1 = path -> integer seconds since mtime, 0 on failure
-    local now mtime
-    now=$(date +%s)
-    mtime=$(stat -c %Y -- "$1" 2> /dev/null || printf '0')
-    if [[ "$mtime" =~ ^[0-9]+$ ]] && ((mtime > 0)); then
-        printf '%s\n' "$((now - mtime))"
-    else
-        printf '0\n'
-    fi
-}
-
-# normalize a target path for kk.
-# the path must be inside the current directory; it need not exist, because
-# decrypt targets a stored asset whose original is usually gone. symlinks are
-# kept as typed. prints the stored path: the user's typed path with ./..///
-# noise stripped, relative to the current directory. the current directory
-# itself is stored as its absolute physical path so "." never appears in
-# metadata.
+# normalize a target path for kk
 print_path() { # $1 = raw path -> stored path (absolute physical path when CWD)
     local raw="$1" abs real_pwd
     local -a parts=()
     local comp old_ifs="$IFS"
     real_pwd=$(realpath -m -- "$PWD") || aborting "cannot resolve current directory: $PWD"
-    abs=$(realpath -m -- "$raw") \
-        || aborting "cannot resolve path: $raw"
+    abs=$(realpath -m -- "$raw") ||
+        aborting "cannot resolve path: $raw"
     case "$abs" in
         "$real_pwd" | "$real_pwd"/*) ;;
         *) aborting "path '$raw' is outside the current directory ($PWD); refusing" ;;
@@ -328,8 +297,6 @@ print_path() { # $1 = raw path -> stored path (absolute physical path when CWD)
         printf '%s\n' "${abs#"$real_pwd"/}"
         return 0
     fi
-    # derive the stored name lexically from what the user typed, so that
-    # `kk link.txt --encrypt` stores an asset retrievable as "link.txt"
     IFS='/'
     for comp in $raw; do
         case "$comp" in
@@ -347,6 +314,18 @@ print_path() { # $1 = raw path -> stored path (absolute physical path when CWD)
     done
     printf '%s\n' "${parts[*]##./}" # joins with '/' while IFS is still '/'
     IFS="$old_ifs"
+}
+
+# print the path's age in whole seconds from its mtime
+print_path_age_seconds() { # $1 = path -> integer seconds since mtime, 0 on failure
+    local now mtime
+    now=$(date +%s)
+    mtime=$(stat -c %Y -- "$1" 2> /dev/null || printf '0')
+    if [[ "$mtime" =~ ^[0-9]+$ ]] && ((mtime > 0)); then
+        printf '%s\n' "$((now - mtime))"
+    else
+        printf '0\n'
+    fi
 }
 
 # print the physical working directory with symlinks resolved
@@ -391,7 +370,7 @@ print_timestamp_now_utc() { # -> YYYYMMDDHHMMSS.uuuuuu
 # print a warning message to stderr
 print_warning() { printf 'kk: warning: %s\n' "$*" >&2; }
 
-# archive a path as a deterministic gzip-compressed tarball.
+# archive a path as a deterministic gzip-compressed tarball
 tar_gzip() { # $1 = relpath, $2 = output .tar.gz, $3 = kind (file|dir); run from CWD
     local rel="$1" out="$2" kind="${3:-}"
     if [[ "$kind" == "dir" ]]; then
@@ -579,7 +558,7 @@ assembly_metadata_build_public() { # $1 = metadata auth salt, $2 = metadata byte
         "payload_hmac=$payload_hmac"
 }
 
-# rebuild the canonical public header for HMAC verification.
+# rebuild the canonical public header for HMAC verification
 assembly_metadata_build_public_canonical() { # $1 = decoded public header text
     local meta="$1"
     printf '%s\n' \
@@ -599,7 +578,7 @@ assembly_metadata_get() { # $1 = file, $2 = key
     sed -n "s/^$2=//p" "$1" 2> /dev/null | head -n 1
 }
 
-# save ownership and location metadata into the current run directory.
+# save ownership and location metadata into the current run directory
 assembly_metadata_save() { # $1 = assembly dir, $2 = asset dir realpath
     local dir="$1" asset_dir_real="$2" meta="$1/$KK_ASSEMBLY_META_FILE"
     assembly_run_id_ensure
@@ -689,7 +668,7 @@ assembly_namespace_id() { # $1 = asset-dir realpath -> short digest
     printf '%s' "$1" | openssl dgst -sha256 -r | cut -c1-"$KK_ASSEMBLY_NAMESPACE_BYTES"
 }
 
-# resolve and init runtime namespace paths for the current KK_DIR.
+# resolve and init runtime namespace paths for the current KK_DIR
 assembly_namespace_init() {
     if [[ -n "${KK_ASSEMBLY_NAMESPACE_DIR:-}" && -n "${KK_RUNS_DIR:-}" && -n "${KK_SCAN_LOCK_DIR:-}" ]]; then
         return 0
@@ -740,7 +719,7 @@ assembly_namespace_is_prunable() { # $1 = namespace dir -> 0 removable, 1 keep
     return 1
 }
 
-# serialize namespace scanning with an ownership-aware lock directory.
+# serialize namespace scanning with an ownership-aware lock directory
 assembly_namespace_lock_acquire() {
     local tries=0 temp_lock
     assembly_namespace_init
@@ -770,7 +749,7 @@ assembly_namespace_lock_acquire() {
     done
 }
 
-# decide whether a namespace scan lock belongs to a dead process.
+# decide whether a namespace scan lock belongs to a dead process
 assembly_namespace_lock_is_orphan() { # $1 = lock dir -> 0 orphan, 1 active
     local lock_dir="$1" meta="$1/$KK_SCAN_LOCK_META_FILE" pid ticks age
     [[ -d "$lock_dir" ]] || return 1
@@ -810,7 +789,7 @@ assembly_namespace_lock_pending_is_orphan() { # $1 = pending lock dir -> 0 orpha
     ((age >= KK_ORPHAN_GRACE_SECONDS))
 }
 
-# release the namespace scan lock when this run still owns it.
+# release the namespace scan lock when this run still owns it
 assembly_namespace_lock_release() {
     local current_run_id meta
     if [[ "${KK_SCAN_LOCK_HELD:-false}" != true ]]; then
@@ -829,7 +808,7 @@ assembly_namespace_lock_release() {
     KK_SCAN_LOCK_HELD=false
 }
 
-# save ownership metadata into a namespace scan lock directory.
+# save ownership metadata into a namespace scan lock directory
 assembly_namespace_lock_save() { # $1 = lock dir
     local meta="$1/$KK_SCAN_LOCK_META_FILE" ticks
     assembly_run_id_ensure
@@ -976,7 +955,7 @@ assembly_print_orphans_gc() {
     shopt -u nullglob dotglob
 }
 
-# validate an extracted restore assembly before promoting it into place.
+# validate an extracted restore assembly before promoting it into place
 assembly_restore_validate() { # $1 = assembly restore dir
     local path root restore_path
     root="$1"
@@ -1137,7 +1116,7 @@ asset_check() { # $1 = relpath or empty
     print_info "all assets verified OK"
 }
 
-# decrypt an asset back into its original path or an explicit restore path.
+# decrypt an asset back into its original path or an explicit restore path
 asset_decrypt() { # $1 = relpath filter or empty, $2 = restore relpath or empty
     local asset f hdr rel meta restore_rel kind
     assembly_namespace_ensure
@@ -1188,8 +1167,6 @@ asset_decrypt() { # $1 = relpath filter or empty, $2 = restore relpath or empty
     local -a assembly_restore_entries=()
     local assembly_restore_name
     if [[ "$rel" == /* || "$restore_rel" == /* ]]; then
-        # restoring the current directory: payload members are stored
-        # relative ("./..."), so promote every entry into the destination
         if [[ ! -d "$restore_rel" ]]; then
             mkdir -p -- "$restore_rel" || aborting "failed to create restore directory '$restore_rel'"
         fi
@@ -1214,7 +1191,6 @@ asset_decrypt() { # $1 = relpath filter or empty, $2 = restore relpath or empty
     fi
     rm -rf -- "$assembly_restore_dir" 2> /dev/null || true
     asset_metadata_check_root_ctime "$meta"
-    # post-restore integrity check against the recorded original-content hash
     local kind stored_content now_sha
     kind=$(asset_metadata_get "$meta" kind)
     stored_content=$(asset_metadata_get "$meta" content_sha256)
@@ -1226,7 +1202,6 @@ asset_decrypt() { # $1 = relpath filter or empty, $2 = restore relpath or empty
             print_info "WARNING: integrity check MISMATCH for $restore_rel (payload itself verified; on-disk content differs)"
         fi
     fi
-    #rm -rf -- "$KK_DIR_STAGE" || aborting "failed to clean up KK_DIR_STAGE dir '$KK_DIR_STAGE'"
     print_info "decrypted '$restore_rel' from $KK_DIR_NAME/$asset"
 }
 
@@ -1250,7 +1225,6 @@ asset_encrypt() { # $1 = relpath
     kk_dir_ensure
     assembly_namespace_ensure
 
-    # prompt for (and confirm) the passphrase before inventory building
     asset_prompt_passphrase confirm
 
     assets_inventory_ensure
@@ -1327,15 +1301,11 @@ asset_encrypt() { # $1 = relpath
     } > "$tmp" || aborting "failed to save asset"
     chmod "$KK_ASSET_PERMISSIONS" -- "$tmp"
     mv -- "$tmp" "$KK_DIR_NAME/$asset" || aborting "failed to rename asset into place"
-    # write a sibling sha256 companion file next to the produced asset so the
-    # integrity of the archive file itself can be verified independently of the
-    # in-band encrypted metadata hash (which covers plaintext, not ciphertext).
     asset_sha256_write "$KK_DIR_NAME/$asset" || {
         rm -f -- "$KK_DIR_NAME/$asset" 2> /dev/null || true
         aborting "failed to write sha256 companion for '$KK_DIR_NAME/$asset'"
     }
     KK_PENDING_ASSET_FILE=""
-    #rm -rf -- "$KK_DIR_STAGE" || aborting "failed to clean up KK_DIR_STAGE dir '$KK_DIR_STAGE'"
     print_info "created $KK_DIR_NAME/$asset  ($kind: $rel, payload ${payload_size} bytes)"
 }
 
@@ -1355,7 +1325,7 @@ asset_get_filename() { # -> YYYYMMDDHHMMSS.uuuuuu-<id>.kk
     aborting "asset filename collision persists for '$KK_DIR_NAME' - aborting (nothing written)"
 }
 
-# decode the public header from an asset file.
+# decode the public header from an asset file
 asset_get_header() { # $1 = asset file -> decoded public header text
     local hdr
     asset_size_validate "$1"
@@ -1370,7 +1340,7 @@ asset_get_header() { # $1 = asset file -> decoded public header text
     printf '%s' "$hdr"
 }
 
-# extract the encrypted metadata bytes from an asset file.
+# extract the encrypted metadata bytes from an asset file
 asset_get_metadata_ciphertext() { # $1 = asset file, $2 = decoded public header text, $3 = output metadata ciphertext file
     local hlen metadata_bytes expected_bytes actual_bytes
     hlen=$(head -n 1 -- "$1" | wc -c)
@@ -1388,7 +1358,7 @@ asset_get_metadata_ciphertext() { # $1 = asset file, $2 = decoded public header 
     [[ "$actual_bytes" -eq "$expected_bytes" ]] || aborting "cannot read metadata of $1"
 }
 
-# extract the encrypted payload bytes from an asset file.
+# extract the encrypted payload bytes from an asset file
 asset_get_payload() { # $1 = asset file, $2 = decoded public header text, $3 = output payload ciphertext file
     local hlen metadata_bytes expected_bytes actual_bytes total_bytes
     hlen=$(head -n 1 -- "$1" | wc -c)
@@ -1434,7 +1404,6 @@ asset_get_selection() { # $1 = relpath filter or empty -> echoes asset name
         printf '%s\n' "$asset"
         return 0
     fi
-    # prompts go to stderr: stdout carries only the selected asset name, which callers capture via command substitution
     assets_print "${1:-}" >&2
     local ans
     printf '\nselect asset [1-%s] (default 1 = newest): ' "${#rows[@]}" >&2
@@ -1462,7 +1431,7 @@ asset_hmac_calc() { # $1 = lowercase hex key, $2 = input file -> lowercase hex h
     printf '%s\n' "$hmac"
 }
 
-# assemble canonical header text plus ciphertext blocks for HMAC computation.
+# assemble canonical header text plus ciphertext blocks for HMAC computation
 asset_hmac_input_build() { # $1 = canonical header text, $2 = output file, $3... = ciphertext file(s)
     local header_text="$1" output_file="$2" input_file
     shift 2
@@ -1483,7 +1452,7 @@ asset_hmac_key_calc() { # $1 = auth salt hex -> lowercase hex key
     printf '%s\n' "$keyhex"
 }
 
-# check the authenticated metadata tag before decryption.
+# check the authenticated metadata tag before decryption
 asset_metadata_check_auth() { # $1 = decoded public header text, $2 = metadata ciphertext file
     local hdr="$1" ciphertext="$2"
     local auth_scheme auth_salt expected actual keyhex auth_input auth_meta
@@ -1506,7 +1475,7 @@ asset_metadata_check_auth() { # $1 = decoded public header text, $2 = metadata c
     fi
 }
 
-# check the decrypted payload hash against recorded metadata.
+# check the decrypted payload hash against recorded metadata
 asset_metadata_check_payload_hash() { # $1 = decoded metadata text, $2 = payload file, $3 = asset name
     local stored_sha actual_sha
     stored_sha=$(asset_metadata_get "$1" payload_sha512)
@@ -1528,14 +1497,14 @@ asset_metadata_check_root_ctime() { # $1 = decoded metadata text
     fi
 }
 
-# decrypt and return the locked metadata block for an asset.
+# decrypt and return the locked metadata block for an asset
 asset_metadata_decrypt() { # $1 = decoded public header text, $2 = asset file -> decoded metadata text
     local meta
     asset_metadata_decrypt_into "$1" "$2" meta
     printf '%s' "$meta"
 }
 
-# decrypt the locked metadata block for an asset into a caller variable.
+# decrypt the locked metadata block for an asset into a caller variable
 asset_metadata_decrypt_into() { # $1 = decoded public header text, $2 = asset file, $3 = output variable name
     local hdr="$1" asset_file="$2" outvar="$3"
     local -a meta_lines=()
@@ -1555,7 +1524,7 @@ asset_metadata_decrypt_into() { # $1 = decoded public header text, $2 = asset fi
     fi
 }
 
-# try to decrypt the locked metadata block for an asset into a caller variable.
+# try to decrypt the locked metadata block for an asset into a caller variable
 asset_metadata_decrypt_try_into() { # $1 = decoded public header text, $2 = asset file, $3 = output variable name
     local actual auth_input auth_meta auth_salt auth_scheme expected hdr keyhex
     local asset_file="$2" outvar="$3"
@@ -1591,17 +1560,17 @@ asset_metadata_decrypt_try_into() { # $1 = decoded public header text, $2 = asse
     fi
 }
 
-# read a key value from decoded metadata text.
+# read a key value from decoded metadata text
 asset_metadata_get() { # $1 = decoded metadata text, $2 = key
     printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
 }
 
-# resolve the restore path from current or legacy metadata fields.
+# resolve the restore path from current or legacy metadata fields
 asset_metadata_get_path_original() { # $1 = decoded metadata text
     asset_metadata_get "$1" path_original
 }
 
-# check the authenticated payload tag before payload decryption.
+# check the authenticated payload tag before payload decryption
 asset_payload_check_auth() { # $1 = decoded public header text, $2 = metadata ciphertext file, $3 = payload ciphertext file
     local hdr="$1" metadata_ciphertext="$2" payload_ciphertext="$3"
     local auth_meta auth_salt auth_input actual expected keyhex
@@ -1620,7 +1589,7 @@ asset_payload_check_auth() { # $1 = decoded public header text, $2 = metadata ci
     fi
 }
 
-# reject tar members whose paths, symlink targets, or entry types are unsafe.
+# reject tar members whose paths, symlink targets, or entry types are unsafe
 asset_payload_check_members_safe() { # $1 = payload tar.gz
     local archive="$1" line name target typeflag
     while IFS=$'\t' read -r typeflag name target; do
@@ -1647,10 +1616,7 @@ asset_payload_check_members_safe() { # $1 = payload tar.gz
     done < <(tar -tzvf "$archive" 2> /dev/null | awk '{type=substr($1,1,1); name=""; for (i=6; i<=NF; i++) {name=(name ? name OFS : "") $i} if (index($0, " -> ") > 0) {split($0, a, " -> "); target=a[2]; sub(/ .*/, "", target)} else {target=""} sub(/ -> .*/, "", name); print type "\t" name "\t" target}')
 }
 
-# read a validated --ppfile passphrase file.
-# The file must be a regular, non-symlink file owned by the current user with
-# mode 0600; anything else is refused to avoid leaking secrets from backup,
-# world- or group-readable, or swapped-in files.
+# read a validated --ppfile passphrase file
 asset_ppfile_read() { # $1 = file -> reads first line into KK_PP
     local file="$1"
     if [[ -L "$file" || ! -f "$file" ]]; then
@@ -1663,7 +1629,7 @@ asset_ppfile_read() { # $1 = file -> reads first line into KK_PP
     KK_PP=$(head -n 1 -- "$file")
 }
 
-# print full metadata for a selected asset.
+# print full metadata for a selected asset
 asset_print_info() { # $1 = relpath or empty
     local asset f hdr meta info
     assembly_namespace_ensure
@@ -1703,7 +1669,7 @@ asset_print_path() { # $1 = final asset filename -> pending file path in KK_DIR_
     printf '%s/%s%s--%s\n' "$KK_DIR_NAME" "$KK_PENDING_PREFIX" "$KK_RUN_ID" "$1"
 }
 
-# ask for confirmation unless force or yes mode is active.
+# ask for confirmation unless force or yes mode is active
 asset_prompt_confirm() { # $1 = message; honors --yes and --force
     if $KK_YES_MODE || $KK_FORCE; then
         return 0
@@ -1717,9 +1683,8 @@ asset_prompt_confirm() { # $1 = message; honors --yes and --force
     esac
 }
 
-# read or load the encryption passphrase for the current run.
-# $1 = "confirm" to require a matching second entry (used by encrypt only).
-asset_prompt_passphrase() {
+# read or load the encryption passphrase for the current run
+asset_prompt_passphrase() { # $1 = "confirm" to require a matching second entry (used by encrypt only)
     local confirm="${1:-}"
     if [[ -n "${KK_PP:-}" ]]; then
         return 0
@@ -1777,7 +1742,7 @@ asset_prompt_passphrase() {
     KK_PP="$pp"
 }
 
-# remove a selected asset after confirmation.
+# remove a selected asset after confirmation
 asset_rm() { # $1 = relpath or empty
     local asset f hdr meta info
     assembly_namespace_ensure
@@ -1785,19 +1750,19 @@ asset_rm() { # $1 = relpath or empty
     assets_inventory_require_complete
     asset=$(asset_get_selection "${1:-}")
     f="$KK_DIR_NAME/$asset"
-    
+
     # Show detailed asset information before deletion
     hdr=$(asset_get_header "$f")
     if ! assets_inventory_session_metadata_load_into "$asset" meta; then
         asset_metadata_decrypt_into "$hdr" "$f" meta
     fi
     info=$(printf '%s\n%s\n' "$hdr" "$meta")
-    
+
     print_info "asset file: $f"
     printf '\n'
     printf '%s\n' "$info" | sort -u
     printf '\n'
-    
+
     if asset_prompt_confirm "remove $f ?"; then
         printf '\n'
         rm -f -- "$f" || aborting "failed to remove asset '$f'"
@@ -1808,7 +1773,7 @@ asset_rm() { # $1 = relpath or empty
     fi
 }
 
-# hash which covers the plaintext.
+# hash which covers the plaintext
 asset_sha256_write() { # $1 = asset file -> writes $1.sha256
     local asset_file="$1" digest
     digest=$(openssl_file_digest_calc sha256 "$asset_file") ||
@@ -1820,7 +1785,7 @@ asset_sha256_write() { # $1 = asset file -> writes $1.sha256
     return 0
 }
 
-# reject asset files larger than the configured cap.
+# reject asset files larger than the configured cap
 asset_size_validate() { # $1 = asset file
     local size
     size=$(stat -c %s -- "$1" 2> /dev/null || printf '0')
@@ -1829,7 +1794,7 @@ asset_size_validate() { # $1 = asset file
     fi
 }
 
-# build an unlocked vault inventory for the current KK_DIR.
+# build an unlocked vault inventory for the current KK_DIR
 assets_inventory_build() {
     local asset end_milliseconds=0 hdr line meta start_milliseconds=0 valid_file
     local -a files=() unlock_failures=() valid_files=()
@@ -1911,14 +1876,14 @@ assets_inventory_build() {
     fi
 }
 
-# ensure the current run has a ready unlocked vault inventory file.
+# ensure the current run has a ready unlocked vault inventory file
 assets_inventory_ensure() {
     $KK_ASSETS_INVENTORY_READY && return 0
     assets_inventory_session_load && return 0
     assets_inventory_build
 }
 
-# render unlocked inventory rows as JSON output.
+# render unlocked inventory rows as JSON output
 assets_inventory_print_json() {
     local rows
     if [[ ! -s "$KK_ASSETS_INVENTORY_FILE" ]]; then
@@ -1929,7 +1894,7 @@ assets_inventory_print_json() {
     assets_print_json "${rows[@]}"
 }
 
-# render unlocked inventory rows as a human-readable table.
+# render unlocked inventory rows as a human-readable table
 assets_inventory_print_table() {
     local rows
     if [[ ! -s "$KK_ASSETS_INVENTORY_FILE" ]]; then
@@ -1948,20 +1913,20 @@ assets_inventory_print_table() {
     print_info "unlocking ${#rows[@]} asset(s) in ${KK_DIR_NAME} took ${KK_ASSETS_INVENTORY_MILLISECONDS} ms"
 }
 
-# print unlocked inventory rows as TSV output.
+# print unlocked inventory rows as TSV output
 assets_inventory_print_tsv() {
     [[ -f "$KK_ASSETS_INVENTORY_FILE" ]] || return 0
     cat -- "$KK_ASSETS_INVENTORY_FILE"
 }
 
-# require a complete unlocked inventory for exact-match or mutating actions.
+# require a complete unlocked inventory for exact-match or mutating actions
 assets_inventory_require_complete() {
     if ((KK_ASSETS_INVENTORY_UNLOCK_ERRORS > 0)); then
         aborting "some assets in '$KK_DIR_NAME' did not unlock with the current passphrase; refusing to continue on a partial vault view"
     fi
 }
 
-# search unlocked inventory rows by original path and print matches.
+# search unlocked inventory rows by original path and print matches
 assets_inventory_search() { # $1 = case-insensitive search pattern
     local pattern="$1"
     local end_milliseconds=0 start_milliseconds=0
@@ -2007,7 +1972,7 @@ assets_inventory_search() { # $1 = case-insensitive search pattern
     done
 }
 
-# print the runtime path of a session cache directory for a token.
+# print the runtime path of a session cache directory for a token
 assets_inventory_session_dir() { # $1 = session token -> secure session cache dir
     local token="$1"
     [[ "$token" =~ ^[0-9a-f]{32}$ ]] || return 1
@@ -2015,7 +1980,7 @@ assets_inventory_session_dir() { # $1 = session token -> secure session cache di
     printf '%s/%s/%s\n' "$XDG_RUNTIME_DIR" "$KK_SESSION_PARENT_DIR_NAME" "$token"
 }
 
-# load an inventory session cache for the current KK_DIR when KK_SESSION is set.
+# load an inventory session cache for the current KK_DIR when KK_SESSION is set
 assets_inventory_session_load() {
     local dir expires kk_dir_real meta now unlock_errors
     local token="${KK_SESSION:-}"
@@ -2044,12 +2009,12 @@ assets_inventory_session_load() {
     return 0
 }
 
-# print the runtime path of a cached metadata file for one asset.
+# print the runtime path of a cached metadata file for one asset
 assets_inventory_session_metadata_file() { # $1 = asset filename -> cached metadata file path
     printf '%s/%s/%s\n' "$KK_ASSETS_SESSION_DIR" "$KK_SESSION_METADATA_DIR_NAME" "$1"
 }
 
-# load cached metadata for an asset from the active inventory session.
+# load cached metadata for an asset from the active inventory session
 assets_inventory_session_metadata_load_into() { # $1 = asset filename, $2 = output variable name
     local asset="$1" file="$2"
     local metadata_file
@@ -2066,7 +2031,7 @@ assets_inventory_session_metadata_load_into() { # $1 = asset filename, $2 = outp
     return 0
 }
 
-# remove the current inventory session cache and print shell cleanup.
+# remove the current inventory session cache and print shell cleanup
 assets_inventory_session_remove() {
     local dir
     if [[ -n "${KK_SESSION:-}" ]]; then
@@ -2078,7 +2043,7 @@ assets_inventory_session_remove() {
     printf 'unset KK_SESSION\n'
 }
 
-# save the current unlocked inventory as a short-lived session cache.
+# save the current unlocked inventory as a short-lived session cache
 assets_inventory_session_save() {
     local dir expires now token
     assembly_dir_runtime_ensure > /dev/null
@@ -2105,14 +2070,14 @@ assets_inventory_session_save() {
     printf 'export KK_SESSION=%s\n' "$token"
 }
 
-# warn when some assets in the current KK_DIR did not unlock with the supplied passphrase.
+# warn when some assets in the current KK_DIR did not unlock with the supplied passphrase
 assets_inventory_warn_unlock_mismatch() {
     local -a assets=("$@")
     print_warning "found ${#assets[@]} asset(s) in '$KK_DIR_NAME' that did not unlock with the current passphrase; listing unlocked assets only:"
     printf '%s\n' "${assets[@]}" >&2
 }
 
-# print matching asset rows in table or JSON form.
+# print matching asset rows in table or JSON form
 assets_print() { # $1 = relpath filter or empty; honors KK_JSON_OUT
     local row_file rows
     assembly_namespace_ensure
@@ -2144,7 +2109,7 @@ assets_print() { # $1 = relpath filter or empty; honors KK_JSON_OUT
     done
 }
 
-# render asset rows as JSON output.
+# render asset rows as JSON output
 assets_print_json() { # $@ = TSV rows from assets_print_tsv
     local first=1 r
     printf '[\n'
@@ -2163,7 +2128,7 @@ assets_print_json() { # $@ = TSV rows from assets_print_tsv
     printf '\n]\n'
 }
 
-# list asset filenames whose original paths are missing.
+# list asset filenames whose original paths are missing
 assets_print_orphans() { # prints orphan asset names, one per line
     local row_file rows line
     assembly_namespace_ensure
@@ -2183,7 +2148,7 @@ assets_print_orphans() { # prints orphan asset names, one per line
     fi
 }
 
-# print all assets using only public header and filename metadata.
+# print all assets using only public header and filename metadata
 assets_print_public() { # honors KK_JSON_OUT
     local rows
     mapfile -t rows < <(assets_print_public_tsv)
@@ -2208,7 +2173,7 @@ assets_print_public() { # honors KK_JSON_OUT
     done
 }
 
-# render public asset rows as JSON output.
+# render public asset rows as JSON output
 assets_print_public_json() { # $@ = TSV rows from assets_print_public_tsv
     local first=1 r
     printf '[\n'
@@ -2226,7 +2191,7 @@ assets_print_public_json() { # $@ = TSV rows from assets_print_public_tsv
     printf '\n]\n'
 }
 
-# collect public asset rows as tab-separated fields.
+# collect public asset rows as tab-separated fields
 assets_print_public_tsv() {
     local f base hdr meta created n=0
     local -a files=()
@@ -2433,7 +2398,7 @@ kk_action_set_default() {
     fi
 }
 
-# decide whether ls should automatically use unlocked inventory.
+# decide whether ls should automatically use unlocked inventory
 kk_ls_should_auto_unlock() {
     if [[ "$KK_ACTION" != "--ls" ]]; then
         return 1
@@ -2447,8 +2412,7 @@ kk_ls_should_auto_unlock() {
     return 1
 }
 
-# dispatch the parsed action to its handler.
-# the target is already the stored path (resolved once in main()).
+# dispatch the parsed action to its handler
 kk_arguments_dispatch() { # $1 = action, $2 = target
     local action="$1" target="$2" rel
     case "$action" in
@@ -2623,16 +2587,16 @@ kk_arguments_parse() {
     fi
 }
 
-# invoke an internal function without re-entering main.
+# invoke an internal function without re-entering main
 kk_call() { "$@"; } # allow the selftest subshell to call actions without re-entering main
 
-# compute the script self-checksum digest after the marker line.
+# compute the script self-checksum digest after the marker line
 kk_checksum_digest_calc() {
     local zero_path="${BASH_SOURCE[0]}"
     tail -n +"$(($(awk '/^# -----BEGIN CHECKSUM HASH-----$/ {print NR; exit}' "$zero_path") + 1))" "$zero_path" | openssl dgst -sha512 -r | cut -d' ' -f1
 }
 
-# create KK_DIR_NAME with the expected permissions.
+# create KK_DIR_NAME with the expected permissions
 kk_dir_ensure() {
     mkdir -p -- "$KK_DIR_NAME"
     chmod "$KK_DIR_PERMISSIONS" -- "$KK_DIR_NAME"
@@ -2705,7 +2669,7 @@ kk_update_checksum_hash() {
         sub(/".*"/, "\"" new_hash "\"");
     }
     { print }
-' "$zero_path"
+    ' "$(realpath "$zero_path")"
 
     if [ $? -ne 0 ]; then
         aborting "failed to update checksum hash in $zero_path"
@@ -2732,16 +2696,12 @@ selftest() {
         printf 'knock knock\n' > selftest.txt
         cp selftest.txt selftest.orig
         m1=$(stat -c %Y selftest.txt)
-        # each action runs in a nested subshell so its aborting/exit cannot kill the selftest
         if ! (KK_PP="kk-selftest" kk_call asset_encrypt "selftest.txt"); then exit 1; fi
         rm -f selftest.txt || aborting "failed to remove selftest.txt"
         if ! (KK_PP="kk-selftest" kk_call asset_decrypt "selftest.txt"); then exit 1; fi
         cmp -s selftest.txt selftest.orig || exit 1
-        # mtime must round-trip too
         if [[ "$(stat -c %Y selftest.txt)" != "$m1" ]]; then exit 1; fi
-        # wrong passphrase must be rejected
         if (KK_PP="wrong-passphrase" kk_call asset_decrypt "selftest.txt") 2> /dev/null; then exit 1; fi
-        # tamper with the ciphertext (past the metadata header); asset auth must reject it before decrypt
         local e hlen
         e=$(ls -1 .kk/*.kk | head -n 1)
         hlen=$(head -n 1 "$e" | wc -c)
@@ -2804,30 +2764,28 @@ flags:
   --version             show version number
   --dir                 show evaluated KK_DIR_NAME
 
-socket mode: kk <host:port> - stubbed, wip.
+socket mode: kk <host:port> - stubbed, wip
 EOF
 }
-
 
 #
 # main
 #
 
-# parse arguments, preflight state, and execute the selected action.
+# parse arguments, preflight state, and execute the selected action
 main() {
     signal_set_traps
     kk_arguments_parse "$@"
 
-    # Resolve the target path exactly once and lock it. Every later stage
-    # consumes the stored path; the raw typed argument is kept in
-    # KK_TARGET_RAW for diagnostics.
     if [[ -n "$KK_TARGET" ]]; then
         KK_TARGET_RAW="$KK_TARGET"
         KK_TARGET=$(print_path "$KK_TARGET_RAW")
     fi
+
     if [[ -n "$KK_RESTORE_TARGET" ]]; then
         KK_RESTORE_TARGET=$(print_path "$KK_RESTORE_TARGET")
     fi
+
     readonly KK_TARGET KK_RESTORE_TARGET
 
     kk_action_set_default
