@@ -1826,11 +1826,3 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     fi
     [ -z "$leaked" ]
 }
-
-# The tests from kk.quick.bats that are duplicated are:
-# 1. "encrypt rejects missing XDG_RUNTIME_DIR" 
-# 2. "decrypt can restore file to a new path"
-# 3. "decrypt can restore a directory to a new path"
-# 4. "kk . properly handles current directory restore"
-
-# These have been merged by giving them the tags=quick,full,stress as specified.
