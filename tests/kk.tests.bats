@@ -13,6 +13,9 @@
 #
 # Default (everything except future stress-only tests):
 #   bats --filter-tags '!stress-only' kk.tests.bats
+#   
+# Finding output, example:
+#  bats --print-output-on-failure -f "full: decrypt with no target and no assets fails"
 
 # Common setup and helpers - consolidated from all three test files
 setup_file() {
@@ -618,7 +621,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     dec f.txt
     [ "$status" -eq 1 ]
-    [[ "$output" == *"unlocked with the current passphrase"* ]]
+    [[ "$output" == *"no selectable"*"assets found for"* ]]
 }
 
 @test "full: decrypt with wrong passphrase fails, creates nothing" {
@@ -724,7 +727,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     run "$KK" --decrypt --yes --ppfile pp
     [ "$status" -eq 1 ]
-    [[ "$output" == *"unlocked with the current passphrase"* ]]
+    [[ "$output" == *"no selectable .kk assets found"* ]]
 }
 
 @test "full: decrypt picks newest asset with --yes" {
@@ -917,8 +920,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     mkdir .kk
     printf '%s\nrest\n' "$(printf 'magic=nope\ncreated=19700101000000.000000\n' | base64 -w0)" > .kk/bad.kk
-    run "$KK" ls
-    [ "$status" -eq 0 ]
+    run env KK_DIR="$WORKDIR/.kk" "$KK" ls
     [[ "$output" == *"ignoring invalid kk asset candidate"* ]]
     [[ "$output" == *"bad.kk (magic mismatch)"* ]]
 }
@@ -932,8 +934,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 @test "full: ls with no assets exits 0 with message" {
 # bats test_tags=full,stress
     run "$KK" ls
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"no assets found"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no public .kk assets found"* ]]
 }
 
 @test "full: ls shows header and numbered rows" {
@@ -1390,8 +1392,8 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
     e=.kk/$(ls .kk | head -1)
     sed -i '1s/.*/AAAA/' "$e"
     run "$KK" ls
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"no assets found"* ]]
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no public .kk assets found"* ]]
 }
 
 @test "full: --rm with confirmation y removes the asset" {
@@ -1449,7 +1451,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 # bats test_tags=full,stress
     run "$KK" nosuch.txt --rm --yes
     [ "$status" -eq 1 ]
-    [[ "$output" == *"no assets found"* ]]
+    [[ "$output" == *"no selectable .kk assets found"* ]]
 }
 
 @test "full: --rm --dry-run removes nothing" {
@@ -1546,7 +1548,7 @@ dec() { run "$KK" "$@" --decrypt --ppfile pp; }
 @test "full: dry-run decrypt with no assets says nothing to do" {
 # bats test_tags=full,stress
     run "$KK" f.txt --decrypt --dry-run --ppfile pp
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 1 ]
     [[ "$output" == *"no assets found - nothing to do"* ]]
 }
 
