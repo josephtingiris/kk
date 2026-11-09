@@ -468,7 +468,7 @@ GitLab
 A draft documented workflow is available in:
 
 ```text
-docs/kk-provenance-workflow-v1.md
+documentation/kk-provenance-workflow-v1.md
 ```
 
 This workflow demonstrates how `.kk` assets may be combined with:
